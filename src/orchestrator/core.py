@@ -151,7 +151,7 @@ class NexusGuardOrchestrator:
             session_id=session_id,
             user_id=user_id,
             org_id=org_id,
-            token_budget=token_budget or self.default_token_budget,
+            token_budget=token_budget if token_budget is not None else self.default_token_budget,
         )
 
         self.sessions[session_id] = session
@@ -179,6 +179,11 @@ class NexusGuardOrchestrator:
         """
         Check if current agent execution would create a loop.
 
+        Multi-layer detection:
+        1. Any agent in path (prevents going back to any previous agent)
+        2. Last 2 hops specifically (direct loop A->B->A)
+        3. Circular patterns (A->B->C->A, etc.)
+
         Returns:
             True if loop detected, False otherwise
         """
@@ -188,15 +193,14 @@ class NexusGuardOrchestrator:
 
         path = session.routing_path
 
-        # Direct loop: current agent in last 2 hops
-        if len(path) >= 2 and current_agent in path[-2:]:
-            return True
+        # Empty path: no loop possible
+        if not path:
+            return False
 
-        # Circular loop: A -> B -> C -> A pattern
-        if len(path) >= 3:
-            # Check if any agent appears twice in last 3 hops
-            if len(set(path[-3:])) < 3:  # Duplicate found
-                return True
+        # Most restrictive: current agent anywhere in path
+        # This prevents A->B->A and A->B->C->A patterns
+        if current_agent in path:
+            return True
 
         return False
 
