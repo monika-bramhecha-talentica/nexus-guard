@@ -1,138 +1,307 @@
 """
-PII (Personally Identifiable Information) Masking Engine
+Phase 3.2: PII Masking Engine
 
-Real-time detection and masking of sensitive data in:
-- User input queries
-- Inter-agent communications
-- Agent output responses
-
-Uses Presidio (open-source) + custom regex patterns.
-
-Implementation details in Phase 3.
+Anonymizes detected PII in real-time with 4 masking strategies:
+1. Placeholder: [MASKED_TYPE]
+2. Partial: Show first/last 4 characters
+3. Hash: SHA256 with prefix
+4. Replacement: Consistent token mapping
 """
 
-import re
+import hashlib
 import logging
-from typing import Dict, List, Tuple, Any
-from dataclasses import dataclass
+from typing import List, Dict, Optional
+from .pii_detector import PIIEntity
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PIIEvent:
-    """Log entry for PII detection."""
-
-    timestamp: str
-    user_id: str
-    pii_type: str
-    masking_rule: str
-    context: str  # Brief context where PII was found
-
-
 class PIIMasker:
     """
-    Real-time PII masking engine.
+    Masking engine for anonymizing PII entities.
 
-    Detects and masks:
-    - Credit card numbers (16-digit)
-    - Indian Aadhaar numbers (12-digit)
-    - API keys and secrets
-    - Email addresses
-    - Phone numbers
-    - Names (via Presidio)
+    Supports 4 strategies:
+    - placeholder: Replace with [MASKED_TYPE]
+    - partial: Keep first 4, last 4 characters
+    - hash: SHA256 hash with prefix
+    - replacement: Consistent token mapping
     """
 
-    def __init__(self):
-        """Initialize PII masker."""
+    # Strategy options
+    VALID_STRATEGIES = ["placeholder", "partial", "hash", "replacement"]
 
-        # Define PII patterns (regex-based)
-        self.pii_patterns: Dict[str, str] = {
-            "CREDIT_CARD": r"\b(?:\d{4}[-\s]?){3}\d{4}\b",  # 16-digit card
-            "AADHAAR": r"\b\d{4}\s\d{4}\s\d{4}\b",  # Indian Aadhaar
-            "API_KEY": r"(?i)api[_-]?key[_-]?[a-zA-Z0-9]{32,}",  # API key pattern
-            "EMAIL": r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b",
-            "PHONE": r"\b(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b",
-        }
-
-        self.pii_events: List[PIIEvent] = []
-
-    def mask_text(self, text: str, user_id: str = "unknown") -> str:
+    def __init__(
+        self,
+        strategy: str = "placeholder",
+        confidence_threshold: float = 0.75
+    ):
         """
-        Mask all PII in text.
+        Initialize masker with chosen strategy.
 
         Args:
-            text: Input text to mask
-            user_id: User ID for audit logging
+            strategy: Masking strategy ('placeholder', 'partial', 'hash', 'replacement')
+            confidence_threshold: Minimum confidence to mask (0.0-1.0)
+
+        Raises:
+            ValueError: If strategy not in VALID_STRATEGIES
+        """
+        if strategy not in self.VALID_STRATEGIES:
+            raise ValueError(
+                f"Strategy '{strategy}' not in {self.VALID_STRATEGIES}"
+            )
+
+        self.strategy = strategy
+        self.confidence_threshold = confidence_threshold
+        self.replacement_map: Dict[str, str] = {}  # For 'replacement' strategy
+        self.token_counter = 0
+
+        logger.info(
+            f"PIIMasker initialized: strategy={strategy}, "
+            f"threshold={confidence_threshold}"
+        )
+
+    def mask_text(self, text: str, entities: List[PIIEntity]) -> str:
+        """
+        Mask detected PII entities in text.
+
+        Algorithm:
+        1. Filter entities by confidence threshold
+        2. Sort entities by start position (descending)
+        3. Process from end to start (prevents offset shifts)
+        4. Replace each entity with mask value
+        5. Return masked text
+
+        Args:
+            text: Original text containing PII
+            entities: List of detected PII entities (from PIIDetector)
 
         Returns:
-            Text with all PII replaced with [REDACTED_<TYPE>]
+            Text with PII masked according to strategy
         """
-        if not text:
+        if not text or not entities:
             return text
 
+        # Filter by confidence threshold
+        filtered = [
+            e for e in entities
+            if e.confidence >= self.confidence_threshold
+        ]
+
+        if not filtered:
+            return text
+
+        # Sort by start position (descending) to process from end to start
+        sorted_entities = sorted(
+            filtered,
+            key=lambda e: e.start,
+            reverse=True
+        )
+
+        # Process each entity
         masked_text = text
-        detections: List[Tuple[str, str]] = []
+        for entity in sorted_entities:
+            mask_value = self.get_mask_value(entity)
+            # Replace text from start to end with mask value
+            masked_text = (
+                masked_text[:entity.start] +
+                mask_value +
+                masked_text[entity.end:]
+            )
 
-        # Apply each PII pattern
-        for pii_type, pattern in self.pii_patterns.items():
-            matches = re.finditer(pattern, masked_text, re.IGNORECASE)
-            for match in matches:
-                original = match.group()
-                replacement = f"[REDACTED_{pii_type}]"
-                masked_text = masked_text.replace(original, replacement)
-                detections.append((pii_type, original))
-
-        # Log detections
-        for pii_type, original in detections:
-            logger.warning(f"PII detected: {pii_type} in user query")
+        logger.debug(
+            f"Masked {len(filtered)} entities using {self.strategy} strategy"
+        )
 
         return masked_text
 
-    def mask_streaming_tokens(self, tokens: List[str], user_id: str = "unknown") -> List[str]:
+    def get_mask_value(self, entity: PIIEntity) -> str:
         """
-        Mask tokens in a streaming fashion.
-
-        Process small batches of tokens (10-50) for real-time masking.
+        Get appropriate mask value for entity based on strategy.
 
         Args:
-            tokens: List of tokens to mask
-            user_id: User ID for audit logging
+            entity: PII entity to mask
 
         Returns:
-            Masked tokens
+            Mask string to replace entity
         """
-        # Join tokens into text, mask, split back
-        text = "".join(tokens)
-        masked_text = self.mask_text(text, user_id)
+        if self.strategy == "placeholder":
+            return self._placeholder_mask(entity)
+        elif self.strategy == "partial":
+            return self._partial_mask(entity)
+        elif self.strategy == "hash":
+            return self._hash_mask(entity)
+        elif self.strategy == "replacement":
+            return self._consistent_replacement(entity)
+        else:
+            # Fallback (shouldn't reach here due to __init__ validation)
+            return self._placeholder_mask(entity)
 
-        # Split back into tokens (approximate)
-        masked_tokens = masked_text.split()
-        return masked_tokens
-
-    def detect_pii(self, text: str) -> List[Dict[str, Any]]:
+    def apply_strategy(self, entity: PIIEntity) -> str:
         """
-        Detect all PII in text without masking.
+        Apply specific masking strategy.
 
         Args:
-            text: Text to analyze
+            entity: Entity to mask
 
         Returns:
-            List of detected PII entities with type and location
+            Masked value
         """
-        detections = []
+        return self.get_mask_value(entity)
 
-        for pii_type, pattern in self.pii_patterns.items():
-            for match in re.finditer(pattern, text, re.IGNORECASE):
-                detections.append({
-                    "type": pii_type,
-                    "value": match.group(),
-                    "start": match.start(),
-                    "end": match.end(),
-                })
+    def preserve_format(self, entity: PIIEntity, masked: str) -> str:
+        """
+        Preserve original format (useful for numbers/dates).
 
-        return detections
+        Maintains the length and character type of original.
 
-    def get_audit_log(self) -> List[PIIEvent]:
-        """Get all recorded PII events."""
-        return self.pii_events
+        Args:
+            entity: Original entity
+            masked: Masked value
+
+        Returns:
+            Format-preserved masked value
+        """
+        original_len = len(entity.text)
+        masked_len = len(masked)
+
+        if masked_len == original_len:
+            return masked
+
+        # If masked is shorter, pad with * or =
+        if masked_len < original_len:
+            padding_char = "*" if entity.entity_type in [
+                "CREDIT_CARD_MASKED",
+                "CREDIT_CARD"
+            ] else "="
+            return masked + (padding_char * (original_len - masked_len))
+
+        # If masked is longer, truncate
+        return masked[:original_len]
+
+    def _placeholder_mask(self, entity: PIIEntity) -> str:
+        """
+        Replace with [MASKED_ENTITY_TYPE].
+
+        Example:
+            "4532123456789010" → "[MASKED_CREDIT_CARD]"
+
+        Args:
+            entity: Entity to mask
+
+        Returns:
+            Placeholder mask
+        """
+        entity_type = entity.entity_type.replace("_", "")
+        return f"[MASKED_{entity_type}]"
+
+    def _partial_mask(self, entity: PIIEntity) -> str:
+        """
+        Show first 4 and last 4 characters.
+
+        Example:
+            "4532123456789010" → "4532****6789010"
+
+        Args:
+            entity: Entity to mask
+
+        Returns:
+            Partially masked value
+        """
+        text = entity.text
+        if len(text) <= 8:
+            # Too short to show first 4 + last 4, mask most of it
+            return text[0] + ("*" * max(1, len(text) - 2)) + text[-1]
+
+        first_4 = text[:4]
+        last_4 = text[-4:]
+        middle_len = len(text) - 8
+        middle = "*" * middle_len
+
+        return first_4 + middle + last_4
+
+    def _hash_mask(self, entity: PIIEntity) -> str:
+        """
+        SHA256 hash with prefix.
+
+        Example:
+            "test@example.com" → "[SHA256:a1b2c3d4...]"
+
+        Args:
+            entity: Entity to mask
+
+        Returns:
+            Hash-based mask with prefix
+        """
+        text = entity.text
+        hash_obj = hashlib.sha256(text.encode())
+        hash_hex = hash_obj.hexdigest()
+        # Show first 8 characters of hash
+        return f"[SHA256:{hash_hex[:8]}]"
+
+    def _consistent_replacement(self, entity: PIIEntity) -> str:
+        """
+        Maintain consistency for same values across message.
+
+        Example:
+            First "TXN001" → "[TXN:ANON_001]"
+            Second "TXN001" → "[TXN:ANON_001]" (same)
+
+        Args:
+            entity: Entity to mask
+
+        Returns:
+            Consistently masked value
+        """
+        text = entity.text
+        entity_type = entity.entity_type
+
+        # Check if we've seen this value before
+        key = (entity_type, text)
+
+        if key not in self.replacement_map:
+            # Generate new token
+            self.token_counter += 1
+            type_prefix = entity_type.split("_")[0]
+            token = f"{type_prefix}:ANON_{self.token_counter:06d}"
+            self.replacement_map[key] = f"[{token}]"
+
+        return self.replacement_map[key]
+
+    def reset_replacement_map(self) -> None:
+        """
+        Clear replacement mapping and reset counter.
+
+        Use this when starting a new masking session.
+        """
+        self.replacement_map.clear()
+        self.token_counter = 0
+        logger.debug("Replacement map reset")
+
+    def get_replacement_map(self) -> Dict[str, str]:
+        """
+        Get current replacement mapping (for debugging/auditing).
+
+        Returns:
+            Dictionary of original values to masked values
+        """
+        return self.replacement_map.copy()
+
+    def mask_batch(
+        self,
+        texts: List[str],
+        entities_list: List[List[PIIEntity]]
+    ) -> List[str]:
+        """
+        Mask multiple texts efficiently.
+
+        Args:
+            texts: List of texts to mask
+            entities_list: List of entity lists (one per text)
+
+        Returns:
+            List of masked texts
+        """
+        return [
+            self.mask_text(text, entities)
+            for text, entities in zip(texts, entities_list)
+        ]
