@@ -10,5 +10,13 @@ Three core guardrails:
 from .loop_detector import LoopDetector
 from .pii_masker import PIIMasker
 from .judge import JudgeLLM
+from .pii_detector import PIIDetector, PIIEntity, CustomPatternRegistry
 
-__all__ = ["LoopDetector", "PIIMasker", "JudgeLLM"]
+__all__ = [
+    "LoopDetector",
+    "PIIMasker",
+    "JudgeLLM",
+    "PIIDetector",
+    "PIIEntity",
+    "CustomPatternRegistry",
+]
