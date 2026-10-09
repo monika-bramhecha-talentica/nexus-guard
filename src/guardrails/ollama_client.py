@@ -276,6 +276,37 @@ Provide JSON evaluation:
             logger.error(f"Invalid score values in LLM response: {e}")
             return {}
 
+    async def stream_generate(self, prompt: str):
+        """
+        Stream generated tokens from Ollama's /api/generate endpoint (NDJSON).
+
+        Yields:
+            Response text fragments as they are produced by the model
+        """
+        import aiohttp
+
+        payload = {
+            "model": self.config.model_name,
+            "prompt": prompt,
+            "stream": True,
+        }
+        timeout = aiohttp.ClientTimeout(total=self.config.timeout * 6)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{self.config.base_url}/api/generate", json=payload
+            ) as response:
+                response.raise_for_status()
+                async for raw_line in response.content:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    chunk = json.loads(line)
+                    fragment = chunk.get("response", "")
+                    if fragment:
+                        yield fragment
+                    if chunk.get("done"):
+                        break
+
     def get_cache_stats(self) -> Dict[str, Any]:
         """
         Get evaluation cache statistics.
