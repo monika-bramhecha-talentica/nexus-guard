@@ -56,6 +56,14 @@ class CustomPatternRegistry:
             "confidence": 0.95,
             "examples": ["1234 5678 9012", "123456789012"],
         },
+        "CREDIT_CARD": {
+            # 16 digits in 4-4-4-4 groups, separator (space or hyphen) must be consistent.
+            # Higher confidence than AADHAAR_ID so overlapping matches resolve to the card.
+            "pattern": r"\b\d{4}([ -]?)\d{4}\1\d{4}\1\d{4}\b",
+            "description": "Payment card number (16 digits)",
+            "confidence": 0.97,
+            "examples": ["4111-2222-3333-4444", "4111 1111 1111 1111", "4111111111111111"],
+        },
         "API_KEY": {
             "pattern": r"(?i)api[_-]?key[=:]\s*[a-zA-Z0-9\-_.]{6,}",
             "description": "API key or token",

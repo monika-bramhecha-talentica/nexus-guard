@@ -79,6 +79,7 @@ def create_app(
     pipeline: StreamingGuardPipeline,
     registry: Optional[SessionRegistry] = None,
     budget_service: Optional[SessionBudgetService] = None,
+    query_transform: Optional[Callable[[str], str]] = None,
 ) -> FastAPI:
     """Build the FastAPI application serving the streaming WebSocket."""
     registry = registry or SessionRegistry()
@@ -121,6 +122,9 @@ def create_app(
                 await _send_error(websocket, "query_too_long", f"Max {MAX_QUERY_CHARS} characters.")
                 await websocket.close(code=1009)
                 return
+            if query_transform is not None:
+                # e.g. input PII masking: applied before budgeting and before any agent sees the query.
+                query = query_transform(query)
             budget_session_id = str(message.get("session_id") or uuid.uuid4().hex)
             await budget_service.open(
                 budget_session_id,
