@@ -2,12 +2,15 @@
 Phase 5 (FR-5.1, FR-5.8): WebSocket streaming API.
 
 Protocol (JSON text frames):
-  client -> {"type": "query", "query": "..."}              start a new stream
+  client -> {"type": "query", "query": "...", "session_id": "...",
+             "org_id": "...", "tier": "..."}               start a new stream
+                                                           (session_id optional; budget is per session)
   client -> {"type": "resume", "stream_id": "...", "from_seq": N}
                                                            replay events with seq > N, then follow live
-  server -> {"seq": 1, "type": "started", ...}
+  server -> {"seq": 1, "type": "started", "stream_id": "...", "session_id": "..."}
   server -> {"seq": k, "type": "token", "text": "..."}      masked output fragment
   server -> {"seq": k, "type": "status", "state": "judging"}
+  server -> {"seq": k, "type": "budget", "state": "estimate|warning|exhausted", ...}
   server -> {"seq": k, "type": "final", "status": "approved|escalated|held", ...}
   server -> {"seq": k, "type": "done", "metrics": {...}}
   server -> {"type": "error", "code": "...", "message": "..."}  (not part of the seq log)
@@ -26,6 +29,10 @@ from typing import Any, AsyncIterator, Callable, Dict, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from src.guardrails.stream_pipeline import StreamingGuardPipeline, StreamSession
+from src.guardrails.token_budget import (
+    InMemoryBudgetStore,
+    SessionBudgetService,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,16 +78,23 @@ def create_app(
     token_source_factory: TokenSourceFactory,
     pipeline: StreamingGuardPipeline,
     registry: Optional[SessionRegistry] = None,
+    budget_service: Optional[SessionBudgetService] = None,
 ) -> FastAPI:
     """Build the FastAPI application serving the streaming WebSocket."""
     registry = registry or SessionRegistry()
+    budget_service = budget_service or SessionBudgetService(InMemoryBudgetStore())
     app = FastAPI(title="Nexus Guard Streaming API")
     app.state.registry = registry
+    app.state.budget_service = budget_service
 
     @app.get("/health")
     async def health() -> Dict[str, Any]:
         registry.gc()
         return {"status": "ok", "active_streams": registry.active_count()}
+
+    @app.get("/budget/{session_id}")
+    async def budget_status(session_id: str) -> Dict[str, Any]:
+        return await budget_service.status(session_id)
 
     @app.websocket("/ws/stream")
     async def stream_ws(websocket: WebSocket) -> None:
@@ -107,6 +121,12 @@ def create_app(
                 await _send_error(websocket, "query_too_long", f"Max {MAX_QUERY_CHARS} characters.")
                 await websocket.close(code=1009)
                 return
+            budget_session_id = str(message.get("session_id") or uuid.uuid4().hex)
+            await budget_service.open(
+                budget_session_id,
+                org_id=message.get("org_id"),
+                tier=message.get("tier"),
+            )
             session = registry.create()
             session.task = asyncio.create_task(
                 pipeline.run(
@@ -114,6 +134,8 @@ def create_app(
                     token_source_factory(query),
                     query=query,
                     agent_id=agent_id,
+                    budget_service=budget_service,
+                    budget_session_id=budget_session_id,
                 )
             )
             from_seq = 0
