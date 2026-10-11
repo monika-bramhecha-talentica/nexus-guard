@@ -49,7 +49,9 @@ class GuardedAssistant:
         entities = self.detector.detect(query)
         if not entities:
             return query
-        self.pii_audit.log_pii_detection(query, entities, context="input_query", user_id=user_id)
+        # One audit event per entity: PIIAuditLogger records only the primary type per call.
+        for entity in entities:
+            self.pii_audit.log_pii_detection(query, [entity], context="input_query", user_id=user_id)
         return self.masker.mask_text(query, entities)
 
     async def answer_tokens(

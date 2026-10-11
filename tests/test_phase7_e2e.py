@@ -89,6 +89,19 @@ class RepeatingAgent(BaseAgent):
                              next_agent_hint="END", status="success")
 
 
+class HintAgent(BaseAgent):
+    """Stub agent with a fixed next hop, so the routing path is fully determined by the test."""
+
+    def __init__(self, name, next_hint, text=None):
+        super().__init__(name=name, description=f"{name} stub", required_fields=[])
+        self.next_hint = next_hint
+        self.text = text or f"{name} answer."
+
+    async def execute(self, query, context, attempt=1, feedback=None):
+        return AgentResponse(agent_id=self.name, output_text=self.text, confidence=0.9,
+                             next_agent_hint=self.next_hint, status="success")
+
+
 class Stack:
     """The whole system, built once per test."""
 
@@ -167,7 +180,8 @@ def delivered_text(events):
 
 class TestExample1Routing:
     def test_refund_routes_billing_then_policy_and_streams_answer(self):
-        stack = Stack(script=["BillingAgent", "PolicyAgent", "END"])
+        stack = Stack(script=["BillingAgent"], agents=[
+            HintAgent("BillingAgent", "PolicyAgent"), HintAgent("PolicyAgent", "END")])
         with TestClient(stack.app) as client:
             events = run_query(client, PRD_EXAMPLE_1)
 
@@ -175,10 +189,11 @@ class TestExample1Routing:
         assert events[-1]["type"] == "done"
         assert events_of(events, "final")[-1]["status"] in ("approved", "escalated")
         assert delivered_text(events).strip() != ""
-        assert stack.routing_path(stack.assistant.last_session_id) == ["BillingAgent", "PolicyAgent"]
+        assert stack.assistant.routing_path(stack.assistant.last_session_id) == ["BillingAgent", "PolicyAgent"]
 
     def test_routing_is_recorded_in_orchestrator_audit_log(self):
-        stack = Stack(script=["BillingAgent", "PolicyAgent", "END"])
+        stack = Stack(script=["BillingAgent"], agents=[
+            HintAgent("BillingAgent", "PolicyAgent"), HintAgent("PolicyAgent", "END")])
         with TestClient(stack.app) as client:
             run_query(client, PRD_EXAMPLE_1)
         audit = stack.orchestrator.get_audit_log(stack.assistant.last_session_id)
@@ -309,7 +324,8 @@ class TestExample3Budget:
 
 class TestLoopAndHopEnforcement:
     def test_direct_loop_is_detected_and_escalated_within_100ms(self):
-        stack = Stack(script=["BillingAgent", "PolicyAgent", "BillingAgent"])
+        stack = Stack(script=["BillingAgent"], agents=[
+            HintAgent("BillingAgent", "PolicyAgent"), HintAgent("PolicyAgent", "BillingAgent")])
         with TestClient(stack.app) as client:
             start = time.perf_counter()
             events = run_query(client, PRD_EXAMPLE_1)
@@ -333,8 +349,11 @@ class TestLoopAndHopEnforcement:
 
     def test_max_hop_breach_is_escalated(self):
         stack = Stack(
-            script=["BillingAgent", "PolicyAgent", "TechSupportAgent", "EscalationAgent"],
-            max_hops=3,
+            script=["BillingAgent"], max_hops=3,
+            agents=[HintAgent("BillingAgent", "PolicyAgent"),
+                    HintAgent("PolicyAgent", "TechSupportAgent"),
+                    HintAgent("TechSupportAgent", "EscalationAgent"),
+                    HintAgent("EscalationAgent", "END")],
         )
         with TestClient(stack.app) as client:
             events = run_query(client, PRD_EXAMPLE_1)
@@ -343,7 +362,8 @@ class TestLoopAndHopEnforcement:
         assert events[-1]["type"] == "done"
 
     def test_query_never_hangs_on_repeated_routing(self):
-        stack = Stack(script=["BillingAgent", "PolicyAgent", "BillingAgent", "PolicyAgent"])
+        stack = Stack(script=["BillingAgent"], agents=[
+            HintAgent("BillingAgent", "PolicyAgent"), HintAgent("PolicyAgent", "BillingAgent")])
         with TestClient(stack.app) as client:
             events = run_query(client, PRD_EXAMPLE_1)
         assert events[-1]["type"] == "done"
@@ -393,12 +413,13 @@ class TestStreamIntegrity:
 
 class TestAuditCompleteness:
     def test_routing_pii_and_budget_are_all_audited_for_one_query(self):
-        stack = Stack(script=["BillingAgent", "PolicyAgent", "END"])
+        stack = Stack(script=["BillingAgent"], agents=[
+            HintAgent("BillingAgent", "PolicyAgent"), HintAgent("PolicyAgent", "END")])
         query = f"{PRD_EXAMPLE_1} Aadhaar {AADHAAR}"
         with TestClient(stack.app) as client:
             events = run_query(client, query)
         session_id = events[0]["session_id"]
-        assert stack.routing_path(stack.assistant.last_session_id) == ["BillingAgent", "PolicyAgent"]
+        assert stack.assistant.routing_path(stack.assistant.last_session_id) == ["BillingAgent", "PolicyAgent"]
         assert any(e.entity_type == "AADHAAR_ID" for e in stack.pii_audit.get_events())
         assert any(e["event"] == "session_opened" for e in stack.budget_audit.events_for(session_id))
         assert any(e["event"] == "charge" for e in stack.budget_audit.events_for(session_id))

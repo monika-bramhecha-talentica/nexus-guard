@@ -295,7 +295,159 @@ class NexusGuardOrchestrator:
                 status="error",
             )
 
+<<<<<<< HEAD
         return await agent.execute(query, {"session_id": session_id, "user_id": session.user_id})
+=======
+        current_response = None
+        current_agent = starting_agent
+        attempt = 0
+        max_attempts = self.max_hops
+
+        while attempt < max_attempts:
+            attempt += 1
+
+            # Determine next agent if not specified
+            if not current_agent:
+                routing_context = {
+                    "routing_path": session.routing_path,
+                    "attempt": attempt,
+                    "current_agent": None,
+                }
+
+                try:
+                    current_agent = self.router.decide_next_agent(query, routing_context)
+                except Exception as e:
+                    logger.error(f"Routing decision failed: {e}")
+                    session.is_escalated = True
+                    session.escalation_reason = f"Routing error: {str(e)}"
+                    return AgentResponse(
+                        agent_id="Orchestrator",
+                        output_text="Failed to route query. Escalating to human support.",
+                        confidence=0.0,
+                        status="error",
+                        next_agent_hint="EscalationAgent",
+                    )
+
+            # If END, return current response
+            if current_agent == "END":
+                if current_response:
+                    return current_response
+                return AgentResponse(
+                    agent_id="Orchestrator",
+                    output_text="Query resolved. Thank you for contacting support.",
+                    confidence=1.0,
+                    status="success",
+                    next_agent_hint="END",
+                )
+
+            # Check loop detection
+            if self.check_loop_detection(session_id, current_agent):
+                logger.warning(f"Loop detected: {session.routing_path} → {current_agent}")
+                self.record_loop_detection(
+                    session_id,
+                    session.routing_path + [current_agent],
+                    "escalated",
+                )
+                session.is_escalated = True
+                session.escalation_reason = "Loop detected - escalating to human support"
+                return AgentResponse(
+                    agent_id="Orchestrator",
+                    output_text="Unable to resolve this issue through automated agents. "
+                    "Escalating to human support.",
+                    confidence=0.5,
+                    status="error",
+                    next_agent_hint="EscalationAgent",
+                )
+
+            # Validate routing decision
+            prev_agent = session.routing_path[-1] if session.routing_path else None
+            if prev_agent and not self.router.is_valid_next_step(
+                prev_agent, current_agent, session.routing_path
+            ):
+                logger.warning(
+                    f"Invalid routing step: {prev_agent} → {current_agent} "
+                    f"(path: {session.routing_path})"
+                )
+                current_agent = "EscalationAgent"
+
+            # Get agent
+            agent = self.get_agent(current_agent)
+            if not agent:
+                logger.error(f"Agent not found: {current_agent}")
+                session.is_escalated = True
+                session.escalation_reason = f"Agent {current_agent} not available"
+                return AgentResponse(
+                    agent_id="Orchestrator",
+                    output_text=f"Agent {current_agent} is not available.",
+                    confidence=0.0,
+                    status="error",
+                )
+
+            # Check token budget before execution
+            if not self.check_token_budget(session_id, 500):  # Estimated tokens per agent
+                logger.warning(f"Token budget exceeded in session {session_id}")
+                session.is_escalated = True
+                session.escalation_reason = "Token budget exceeded"
+                return AgentResponse(
+                    agent_id="Orchestrator",
+                    output_text="Token budget exceeded. Escalating to human support.",
+                    confidence=1.0,
+                    status="error",
+                    next_agent_hint="END",
+                )
+
+            # Execute agent
+            try:
+                logger.info(f"Executing {current_agent} for session {session_id}")
+                context = {
+                    "session_id": session_id,
+                    "user_id": session.user_id,
+                    "routing_path": session.routing_path,
+                    "attempt": attempt,
+                }
+
+                current_response = await agent.execute(query, context)
+
+                # Track routing
+                self.track_routing(session_id, current_agent)
+                self.consume_tokens(session_id, 500)  # Estimate tokens used
+
+                # Check if agent suggests next agent or END
+                next_agent = current_response.next_agent_hint
+
+                # Handle agent escalation
+                if next_agent == "EscalationAgent":
+                    session.is_escalated = True
+                    session.escalation_reason = f"{current_agent} escalated"
+                    return current_response
+
+                current_agent = next_agent
+
+            except Exception as e:
+                logger.error(f"Agent execution failed: {current_agent} - {e}")
+                session.is_escalated = True
+                session.escalation_reason = f"Agent execution error: {str(e)}"
+                return AgentResponse(
+                    agent_id=current_agent or "Orchestrator",
+                    output_text="Agent execution failed. Escalating to human support.",
+                    confidence=0.0,
+                    status="error",
+                    next_agent_hint="EscalationAgent",
+                )
+
+        # Max hops exceeded
+        logger.warning(f"Max hops ({max_attempts}) exceeded in session {session_id}")
+        session.is_escalated = True
+        session.escalation_reason = "Max agent hops exceeded"
+        return AgentResponse(
+            agent_id="Orchestrator",
+            output_text="Unable to resolve this issue through multiple agents. "
+            "Escalating to human support.",
+            confidence=0.5,
+            status="error",
+            next_agent_hint="EscalationAgent",
+        )
+>>>>>>> d14ca3b (Phase 7: make E2E suite pass; fix max_hops and per-entity PII audit)
 
     def get_audit_log(self, session_id: str) -> Dict[str, Any]:
         """
