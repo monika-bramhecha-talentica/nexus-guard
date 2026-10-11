@@ -77,3 +77,6 @@ redis_data/
 ollama_models/
 session_cache/
 audit_logs/
+
+# Local Redis snapshot
+dump.rdb
