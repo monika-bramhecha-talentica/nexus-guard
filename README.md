@@ -298,24 +298,13 @@ See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for detailed explanation.
 
 ## API Endpoints
 
-### REST Endpoints
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Liveness and count of active streams |
+| GET | `/budget/{session_id}` | Token budget state for a session |
+| WebSocket | `/ws/stream` | Streaming query with masking, budgets, judge gating and resume |
 
-| Method | Endpoint | Description | Phase |
-|--------|----------|-------------|-------|
-| GET | `/health` | Health check | 1 ✅ |
-| GET | `/agents` | List agents | 1 ✅ |
-| POST | `/session` | Create session | 1 ✅ |
-| GET | `/session/{id}/budget` | Budget status | 6 |
-| GET | `/session/{id}/audit` | Audit log | 1 ✅ |
-| GET | `/config` | Get configuration | 1 ✅ |
-
-### WebSocket Endpoint
-
-| Endpoint | Purpose | Phase |
-|----------|---------|-------|
-| `/ws/chat` | Streaming chat interaction | 5 |
-
-Full API specification in [ARCHITECTURE.md](docs/ARCHITECTURE.md) (Phase 8)
+The WebSocket protocol, event types and error codes are described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
@@ -419,19 +408,21 @@ docker-compose logs ollama
 
 ## Development Phases
 
-| Phase | Task | Status | Est. Duration |
-|-------|------|--------|---|
-| 0 | Requirements & Design | ✅ Complete | 2 days |
-| 1 | Architecture & Framework Setup | 🔄 In Progress | 3 days |
-| 2 | Multi-Agent Routing | ⏳ Planned | 5 days |
-| 3 | PII Masking Engine | ⏳ Planned | 4 days |
-| 4 | LLM-as-a-Judge | ⏳ Planned | 4 days |
-| 5 | Streaming & Latency | ⏳ Planned | 3 days |
-| 6 | Token Budgeting | ⏳ Planned | 2 days |
-| 7 | Integration Testing | ⏳ Planned | 5 days |
-| 8 | Documentation | ⏳ Planned | 3 days |
-| 9 | Docker & Deployment | ⏳ Planned | 2 days |
-| 10 | Demo & Presentation | ⏳ Planned | 2 days |
+| Phase | Task | Status |
+|-------|------|--------|
+| 0 | Requirements & Design | ✅ Complete |
+| 1 | Architecture & Framework Setup | ✅ Complete |
+| 2 | Multi-Agent Routing | ✅ Complete (3 tests need a live Ollama) |
+| 3 | PII Masking Engine | ✅ Complete |
+| 4 | LLM-as-a-Judge | ✅ Complete |
+| 5 | Streaming & Latency | ✅ Complete |
+| 6 | Token Budgeting | ✅ Complete |
+| 7 | Integration Testing | ✅ Complete (end-to-end suite passing) |
+| 8 | Documentation | 🔄 In progress |
+| 9 | Docker & Deployment | ⏳ Planned |
+| 10 | Demo & Presentation | ⏳ Planned |
+
+Open items are listed under Known gaps in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ---
 
@@ -481,6 +472,12 @@ Proprietary - Internal Use Only
 
 ## Changelog
 
+### Unreleased
+- Phase 5: WebSocket streaming with holdback masking, judge gating and resume
+- Phase 6: token budgets with Redis-backed sharing and budget audit trail
+- Phase 7: end-to-end suite; fixed `max_hops` being ignored and per-entity PII audit; card-number detection
+- Phase 8: architecture and API reference added
+
 ### Version 1.0.0 (2026-09-30)
 - **Initial Release**: Project structure, Phase 0-1 complete
 - Agent interface defined
@@ -490,5 +487,5 @@ Proprietary - Internal Use Only
 
 ---
 
-**Last Updated**: 2026-09-30  
-**Next Milestone**: Phase 2 - Multi-Agent Routing (Est. 2026-10-05)
+**Last Updated**: 2026-10-11  
+**Next Milestone**: Phase 9 - Docker & Deployment
